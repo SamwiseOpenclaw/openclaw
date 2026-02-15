@@ -6,6 +6,16 @@
 
 ---
 
+## Actual Gaps (Why We're Doing This)
+
+1. **No temporal filtering** — Can't search "last Tuesday" or "before meeting X"
+2. **MEMORY.md gets stale** — Manual updates inconsistent
+3. **No pattern recognition** — Don't notice trends across conversations
+4. **No proactive surfacing** — Only search when explicitly asked
+5. **No self-awareness** — Don't know my own memory state
+
+---
+
 ## Architecture Decision: OpenMemory
 
 Adopting **OpenMemory** (github.com/CaviraOSS/OpenMemory) as enhanced memory backend.
@@ -205,6 +215,66 @@ const TEST_QUERIES = [
 
 ---
 
+## Phase 6: Periodic Review (Future)
+
+**Goal:** Analyze memories for patterns and maintenance needs
+
+Not compression — embedding search doesn't need summaries.  
+Analysis — what can we learn from reviewing past periods?
+
+### Outputs
+
+| Output                    | Purpose                               |
+| ------------------------- | ------------------------------------- |
+| **Patterns**              | "X discussed 4 times this week"       |
+| **Contradictions**        | "Monday said A, Wednesday said not-A" |
+| **Gaps**                  | "Discussed Y but no outcome recorded" |
+| **MEMORY.md suggestions** | Add/update/remove facts               |
+| **Importance boosts**     | Increase scores for recurring items   |
+
+### Architecture
+
+```
+Cron: Sunday 21:00 UTC
+  → Isolated session
+  → Read: past week's daily files
+  → Analyze: patterns, contradictions, gaps
+  → Output: memory/reviews/weekly-YYYY-WXX.md
+  → Suggest: MEMORY.md changes (I review, Dom approves if needed)
+```
+
+### Review Format
+
+```markdown
+# Weekly Review - 2026-W07
+
+**Period:** 2026-02-10 to 2026-02-16
+
+## Patterns
+
+- [Topic/entity with frequency and significance]
+
+## Contradictions
+
+- [Conflict with source dates]
+
+## Open Items
+
+- [Unresolved question or TODO]
+
+## MEMORY.md Suggestions
+
+- Add: [new fact]
+- Update: [old → new]
+- Remove: [stale]
+
+## Importance Adjustments
+
+- Boost: [items to increase score]
+```
+
+---
+
 ## Next Steps
 
 1. [x] **Create OpenMemory client** (`src/memory/openmemory-client.ts`) ✅
@@ -251,6 +321,15 @@ const TEST_QUERIES = [
   - 76 memories migrated
   - Defined dual-path integration approach
 - **v4.0 (2026-02-15):** Initial OpenMemory integration plan
+
+---
+
+## Lessons Learned
+
+1. **Question assumptions** — "Compression" sounded good but wasn't solving real problems
+2. **Follow the data flow** — Embedding search handles retrieval; gaps are elsewhere
+3. **Defer complexity** — Entity extraction is cool but not critical yet
+4. **Focus on maintenance** — Keeping MEMORY.md fresh is higher value than fancy features
 
 ---
 
