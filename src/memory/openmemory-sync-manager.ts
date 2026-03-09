@@ -83,6 +83,12 @@ export class OpenMemorySyncManager extends OpenMemoryClient {
     }
     this.running = true;
     this.unsubscribeSessionEvents = onSessionTranscriptUpdate((update) => {
+      // Filter: only process sessions belonging to this agent
+      // Path format: .../agents/<agentId>/sessions/<file>
+      const match = update.sessionFile.match(/\/agents\/([^/]+)\/sessions\//);
+      if (match?.[1]?.toLowerCase() !== this.agentId.toLowerCase()) {
+        return;
+      }
       void this.handleSessionUpdate(update.sessionFile);
     });
 
