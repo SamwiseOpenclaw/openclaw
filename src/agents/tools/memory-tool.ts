@@ -87,10 +87,10 @@ export function createMemorySearchTool(options: {
           if (startDate || endDate || sector) {
             temporal = {};
             if (startDate) {
-              temporal.startTime = new Date(startDate).getTime();
+              temporal.startTime = Math.floor(new Date(startDate).getTime() / 1000);
             }
             if (endDate) {
-              temporal.endTime = new Date(endDate + "T23:59:59").getTime(); // End of day
+              temporal.endTime = Math.floor(new Date(endDate + "T23:59:59").getTime() / 1000);
             }
             if (sector) {
               temporal.sector = sector as
