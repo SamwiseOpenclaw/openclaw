@@ -359,7 +359,7 @@ export async function runFullConsolidation(params: ConsolidationParams): Promise
 }
 
 // CLI runner
-if (require.main === module) {
+if (import.meta.url === `file://${process.argv[1]}`) {
   const memoryDir = process.argv[2] || "./memory";
   const outputDir = process.argv[3] || "./memory/consolidated";
 

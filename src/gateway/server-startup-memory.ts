@@ -5,7 +5,7 @@ import { resolveMemoryBackendConfig } from "../memory/backend-config.js";
 import { getMemorySearchManager } from "../memory/index.js";
 import { OpenMemorySyncManager } from "../memory/openmemory-sync-manager.js";
 
-let openMemorySyncManager: OpenMemorySyncManager | null = null;
+const openMemorySyncManagers = new Map<string, OpenMemorySyncManager>();
 
 export async function startGatewayMemoryBackend(params: {
   cfg: OpenClawConfig;
@@ -47,7 +47,7 @@ export async function startGatewayMemoryBackend(params: {
 
         if (manager) {
           manager.startListening();
-          openMemorySyncManager = manager;
+          openMemorySyncManagers.set(agentId, manager);
           params.log.info?.(`OpenMemory session sync started for agent "${agentId}"`);
         }
       } catch (err) {
@@ -60,8 +60,8 @@ export async function startGatewayMemoryBackend(params: {
 }
 
 export async function stopGatewayMemoryBackend(): Promise<void> {
-  if (openMemorySyncManager) {
-    await openMemorySyncManager.close();
-    openMemorySyncManager = null;
+  for (const manager of openMemorySyncManagers.values()) {
+    await manager.close();
   }
+  openMemorySyncManagers.clear();
 }
