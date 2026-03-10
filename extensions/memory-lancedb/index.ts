@@ -7,7 +7,6 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type * as LanceDB from "@lancedb/lancedb";
 import { Type } from "@sinclair/typebox";
 import OpenAI from "openai";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/memory-lancedb";
@@ -18,6 +17,8 @@ import {
   memoryConfigSchema,
   vectorDimsForModel,
 } from "./config.js";
+import { loadLanceDBRuntime } from "./lancedb.runtime.js";
+import type * as LanceDB from "./lancedb.runtime.js";
 
 // ============================================================================
 // Types
@@ -26,11 +27,13 @@ import {
 let lancedbImportPromise: Promise<typeof import("@lancedb/lancedb")> | null = null;
 const loadLanceDB = async (): Promise<typeof import("@lancedb/lancedb")> => {
   if (!lancedbImportPromise) {
-    lancedbImportPromise = import("@lancedb/lancedb");
+    lancedbImportPromise = loadLanceDBRuntime();
   }
   try {
     return await lancedbImportPromise;
   } catch (err) {
+    // Allow a later retry if the first dynamic import failed.
+    lancedbImportPromise = null;
     // Common on macOS today: upstream package may not ship darwin native bindings.
     throw new Error(`memory-lancedb: failed to load LanceDB. ${String(err)}`, { cause: err });
   }
@@ -71,11 +74,14 @@ class MemoryDB {
       return;
     }
     if (this.initPromise) {
-      return this.initPromise;
+      return await this.initPromise;
     }
 
-    this.initPromise = this.doInitialize();
-    return this.initPromise;
+    this.initPromise = this.doInitialize().catch((err) => {
+      this.initPromise = null;
+      throw err;
+    });
+    return await this.initPromise;
   }
 
   private async doInitialize(): Promise<void> {

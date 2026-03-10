@@ -12,14 +12,23 @@
 import { existsSync } from "fs";
 import { readdir, readFile, writeFile, mkdir } from "fs/promises";
 import { join } from "path";
+import { type Context, complete } from "@mariozechner/pi-ai";
+import { resolveOpenClawAgentDir } from "../agents/agent-paths.js";
+import { getApiKeyForModel, requireApiKey } from "../agents/model-auth.js";
+import { resolveModel } from "../agents/pi-embedded-runner/model.js";
+import { extractAssistantText } from "../agents/pi-embedded-utils.js";
+import { ensureOpenClawModelsJson } from "../agents/tools/tool-runtime.helpers.js";
+import { loadConfig, type OpenClawConfig } from "../config/config.js";
 
 export type ConsolidationLevel = "daily" | "weekly" | "monthly" | "longterm";
 
 export interface ConsolidationParams {
   memoryDir: string;
   outputDir: string;
-  llmProvider: "openai" | "anthropic" | "gemini";
+  llmProvider: "openai" | "anthropic" | "gemini" | "minimax";
   model?: string;
+  cfg?: OpenClawConfig;
+  agentDir?: string;
 }
 
 export interface MemoryFile {
@@ -37,6 +46,84 @@ export interface ConsolidatedMemory {
   decisions: string[];
   preferences: string[];
   timestamp: number;
+}
+
+type ConsolidationRuntimeDeps = {
+  now?: () => number;
+  invokeModel?: (params: {
+    prompt: string;
+    llmProvider: ConsolidationParams["llmProvider"];
+    model?: string;
+    cfg?: OpenClawConfig;
+    agentDir?: string;
+  }) => Promise<string>;
+};
+
+const DEFAULT_PROVIDER_MODEL: Record<ConsolidationParams["llmProvider"], string> = {
+  anthropic: "claude-sonnet-4-5",
+  minimax: "MiniMax-M2.5",
+};
+
+function resolveConsolidationModelRef(params: {
+  llmProvider: ConsolidationParams["llmProvider"];
+  model?: string;
+}): { provider: string; modelId: string } {
+  const rawModel = params.model?.trim();
+  if (rawModel?.includes("/")) {
+    const slash = rawModel.indexOf("/");
+    return {
+      provider: rawModel.slice(0, slash),
+      modelId: rawModel.slice(slash + 1),
+    };
+  }
+  return {
+    provider: params.llmProvider,
+    modelId: rawModel || DEFAULT_PROVIDER_MODEL[params.llmProvider],
+  };
+}
+
+async function invokeConsolidationModel(params: {
+  prompt: string;
+  llmProvider: ConsolidationParams["llmProvider"];
+  model?: string;
+  cfg?: OpenClawConfig;
+  agentDir?: string;
+}): Promise<string> {
+  const cfg = params.cfg ?? loadConfig();
+  const agentDir = params.agentDir ?? resolveOpenClawAgentDir();
+  const { provider, modelId } = resolveConsolidationModelRef({
+    llmProvider: params.llmProvider,
+    model: params.model,
+  });
+
+  await ensureOpenClawModelsJson(cfg, agentDir);
+  const { model, error } = resolveModel(provider, modelId, agentDir, cfg);
+  if (!model) {
+    throw new Error(error ?? `Unknown model: ${provider}/${modelId}`);
+  }
+
+  const apiKeyInfo = await getApiKeyForModel({ model, cfg, agentDir });
+  const apiKey = requireApiKey(apiKeyInfo, model.provider);
+  const context: Context = {
+    messages: [
+      {
+        role: "user",
+        content: params.prompt,
+        timestamp: Date.now(),
+      },
+    ],
+  };
+  const message = await complete(model, context, {
+    apiKey,
+    maxTokens: Math.min(model.maxTokens ?? 4096, 4096),
+    temperature: 0.1,
+  });
+
+  const text = extractAssistantText(message).trim();
+  if (!text) {
+    throw new Error(`Consolidation model returned no text (${provider}/${modelId}).`);
+  }
+  return text;
 }
 
 /**
@@ -178,7 +265,9 @@ export function parseConsolidationResponse(
   level: ConsolidationLevel,
   period: string,
   sourceFiles: string[],
+  options?: { timestamp?: number },
 ): ConsolidatedMemory {
+  const timestamp = options?.timestamp ?? Date.now();
   // Try to extract JSON from response
   const jsonMatch = response.match(/\{[\s\S]*\}/);
 
@@ -192,7 +281,7 @@ export function parseConsolidationResponse(
       keyFacts: [],
       decisions: [],
       preferences: [],
-      timestamp: Date.now(),
+      timestamp,
     };
   }
 
@@ -206,7 +295,7 @@ export function parseConsolidationResponse(
       keyFacts: parsed.keyFacts || [],
       decisions: parsed.decisions || [],
       preferences: parsed.preferences || [],
-      timestamp: Date.now(),
+      timestamp,
     };
   } catch {
     // If JSON parse fails, return raw response as summary
@@ -218,7 +307,7 @@ export function parseConsolidationResponse(
       keyFacts: [],
       decisions: [],
       preferences: [],
-      timestamp: Date.now(),
+      timestamp,
     };
   }
 }
@@ -276,6 +365,13 @@ export async function runConsolidation(
   level: ConsolidationLevel,
   period: string,
   _outputDir: string,
+  options?: {
+    llmProvider?: ConsolidationParams["llmProvider"];
+    model?: string;
+    cfg?: OpenClawConfig;
+    agentDir?: string;
+  },
+  deps?: ConsolidationRuntimeDeps,
 ): Promise<ConsolidatedMemory | null> {
   if (files.length === 0) {
     console.log(`No files to consolidate for ${period}`);
@@ -285,22 +381,23 @@ export async function runConsolidation(
   console.log(`Consolidating ${files.length} files for ${period} (${level})...`);
 
   const prompt = buildConsolidationPrompt(files, level, period);
-
-  // TODO: Call LLM API here
-  // For now, return a placeholder
-  console.log("LLM integration not yet implemented - would send prompt:");
-  console.log(prompt.substring(0, 500) + "...");
-
-  return {
+  const invokeModel = deps?.invokeModel ?? invokeConsolidationModel;
+  const response = await invokeModel({
+    prompt,
+    llmProvider: options?.llmProvider ?? "minimax",
+    model: options?.model,
+    cfg: options?.cfg,
+    agentDir: options?.agentDir,
+  });
+  return parseConsolidationResponse(
+    response,
     level,
     period,
-    sourceFiles: files.map((f) => f.date),
-    summary: "(Placeholder - LLM integration needed)",
-    keyFacts: [],
-    decisions: [],
-    preferences: [],
-    timestamp: Date.now(),
-  };
+    files.map((f) => f.date),
+    {
+      timestamp: deps?.now?.() ?? Date.now(),
+    },
+  );
 }
 
 /**
@@ -329,7 +426,12 @@ export async function runFullConsolidation(params: ConsolidationParams): Promise
 
   // Consolidate each week
   for (const [week, files] of weeklyGroups) {
-    const consolidated = await runConsolidation(files, "weekly", week, outputDir);
+    const consolidated = await runConsolidation(files, "weekly", week, outputDir, {
+      llmProvider: params.llmProvider,
+      model: params.model,
+      cfg: params.cfg,
+      agentDir: params.agentDir,
+    });
 
     if (consolidated) {
       const outputPath = join(outputDir, `weekly-${week}.md`);
@@ -345,7 +447,12 @@ export async function runFullConsolidation(params: ConsolidationParams): Promise
 
   // Consolidate each month
   for (const [month, files] of monthlyGroups) {
-    const consolidated = await runConsolidation(files, "monthly", month, outputDir);
+    const consolidated = await runConsolidation(files, "monthly", month, outputDir, {
+      llmProvider: params.llmProvider,
+      model: params.model,
+      cfg: params.cfg,
+      agentDir: params.agentDir,
+    });
 
     if (consolidated) {
       const outputPath = join(outputDir, `monthly-${month}.md`);
@@ -366,6 +473,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   runFullConsolidation({
     memoryDir,
     outputDir,
-    llmProvider: "openai",
+    llmProvider: "minimax",
   }).catch(console.error);
 }

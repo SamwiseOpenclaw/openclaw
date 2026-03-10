@@ -13,6 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 
+const retryMockState = vi.hoisted(() => ({ lancedbImportAttempts: 0 }));
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? "test-key";
 const HAS_OPENAI_KEY = Boolean(process.env.OPENAI_API_KEY);
 const liveEnabled = HAS_OPENAI_KEY && process.env.OPENCLAW_LIVE_TEST === "1";
@@ -149,14 +150,16 @@ describe("memory plugin e2e", () => {
         embeddings = { create: embeddingsCreate };
       },
     }));
-    vi.doMock("@lancedb/lancedb", () => ({
-      connect: vi.fn(async () => ({
-        tableNames: vi.fn(async () => ["memories"]),
-        openTable: vi.fn(async () => ({
-          vectorSearch,
-          countRows: vi.fn(async () => 0),
-          add: vi.fn(async () => undefined),
-          delete: vi.fn(async () => undefined),
+    vi.doMock("./lancedb.runtime.js", () => ({
+      loadLanceDBRuntime: vi.fn(async () => ({
+        connect: vi.fn(async () => ({
+          tableNames: vi.fn(async () => ["memories"]),
+          openTable: vi.fn(async () => ({
+            vectorSearch,
+            countRows: vi.fn(async () => 0),
+            add: vi.fn(async () => undefined),
+            delete: vi.fn(async () => undefined),
+          })),
         })),
       })),
     }));
@@ -213,7 +216,103 @@ describe("memory plugin e2e", () => {
       });
     } finally {
       vi.doUnmock("openai");
-      vi.doUnmock("@lancedb/lancedb");
+      vi.doUnmock("./lancedb.runtime.js");
+      vi.resetModules();
+    }
+  });
+
+  test("retries LanceDB import after an initial load failure", async () => {
+    const embeddingsCreate = vi.fn(async () => ({
+      data: [{ embedding: [0.1, 0.2, 0.3] }],
+    }));
+    const toArray = vi.fn(async () => []);
+    const limit = vi.fn(() => ({ toArray }));
+    const vectorSearch = vi.fn(() => ({ limit }));
+    retryMockState.lancedbImportAttempts = 0;
+
+    vi.resetModules();
+    vi.doMock("openai", () => ({
+      default: class MockOpenAI {
+        embeddings = { create: embeddingsCreate };
+      },
+    }));
+    vi.doMock("./lancedb.runtime.js", () => {
+      return {
+        loadLanceDBRuntime: vi.fn(async () => {
+          retryMockState.lancedbImportAttempts += 1;
+          if (retryMockState.lancedbImportAttempts === 1) {
+            throw new Error("native bindings missing");
+          }
+          return {
+            connect: vi.fn(async () => ({
+              tableNames: vi.fn(async () => ["memories"]),
+              openTable: vi.fn(async () => ({
+                vectorSearch,
+                countRows: vi.fn(async () => 0),
+                add: vi.fn(async () => undefined),
+                delete: vi.fn(async () => undefined),
+              })),
+            })),
+          };
+        }),
+      };
+    });
+
+    try {
+      const { default: memoryPlugin } = await import("./index.js");
+      // oxlint-disable-next-line typescript/no-explicit-any
+      const registeredTools: any[] = [];
+      const mockApi = {
+        id: "memory-lancedb",
+        name: "Memory (LanceDB)",
+        source: "test",
+        config: {},
+        pluginConfig: {
+          embedding: {
+            apiKey: OPENAI_API_KEY,
+            model: "text-embedding-3-small",
+          },
+          dbPath,
+          autoCapture: false,
+          autoRecall: false,
+        },
+        runtime: {},
+        logger: {
+          info: vi.fn(),
+          warn: vi.fn(),
+          error: vi.fn(),
+          debug: vi.fn(),
+        },
+        // oxlint-disable-next-line typescript/no-explicit-any
+        registerTool: (tool: any, opts: any) => {
+          registeredTools.push({ tool, opts });
+        },
+        // oxlint-disable-next-line typescript/no-explicit-any
+        registerCli: vi.fn(),
+        // oxlint-disable-next-line typescript/no-explicit-any
+        registerService: vi.fn(),
+        // oxlint-disable-next-line typescript/no-explicit-any
+        on: vi.fn(),
+        resolvePath: (p: string) => p,
+      };
+
+      // oxlint-disable-next-line typescript/no-explicit-any
+      memoryPlugin.register(mockApi as any);
+      const recallTool = registeredTools.find((t) => t.opts?.name === "memory_recall")?.tool;
+      expect(recallTool).toBeDefined();
+
+      await expect(
+        recallTool.execute("test-call-import-fail", { query: "first try" }),
+      ).rejects.toThrow("memory-lancedb: failed to load LanceDB");
+      await expect(
+        recallTool.execute("test-call-import-retry", { query: "second try" }),
+      ).resolves.toMatchObject({
+        details: { count: 0 },
+      });
+      expect(retryMockState.lancedbImportAttempts).toBe(2);
+    } finally {
+      vi.doUnmock("openai");
+      vi.doUnmock("./lancedb.runtime.js");
       vi.resetModules();
     }
   });

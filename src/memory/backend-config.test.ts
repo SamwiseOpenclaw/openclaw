@@ -13,6 +13,37 @@ describe("resolveMemoryBackendConfig", () => {
     expect(resolved.qmd).toBeUndefined();
   });
 
+  it("defaults openmemory userId to the agent id", () => {
+    const cfg = {
+      agents: { defaults: { workspace: "/tmp/memory-test" } },
+      memory: {
+        backend: "openmemory",
+        openmemory: {
+          url: "http://127.0.0.1:8765",
+        },
+      },
+    } as OpenClawConfig;
+    const resolved = resolveMemoryBackendConfig({ cfg, agentId: "main" });
+    expect(resolved.backend).toBe("openmemory");
+    expect(resolved.openmemory?.userId).toBe("main");
+  });
+
+  it("uses explicit openmemory userId when provided", () => {
+    const cfg = {
+      agents: { defaults: { workspace: "/tmp/memory-test" } },
+      memory: {
+        backend: "openmemory",
+        openmemory: {
+          url: "http://127.0.0.1:8765",
+          userId: "shared-user",
+        },
+      },
+    } as OpenClawConfig;
+    const resolved = resolveMemoryBackendConfig({ cfg, agentId: "main" });
+    expect(resolved.backend).toBe("openmemory");
+    expect(resolved.openmemory?.userId).toBe("shared-user");
+  });
+
   it("resolves qmd backend with default collections", () => {
     const cfg = {
       agents: { defaults: { workspace: "/tmp/memory-test" } },

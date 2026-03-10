@@ -272,9 +272,7 @@ export class OpenMemorySyncManager extends OpenMemoryClient {
   }
 
   private extractSessionId(absPath: string): string {
-    const base = path.basename(absPath, ".jsonl");
-    const [head] = base.split("-");
-    return head || base;
+    return path.basename(absPath, ".jsonl");
   }
 
   private async countNewlines(absPath: string, start: number, end: number): Promise<number> {

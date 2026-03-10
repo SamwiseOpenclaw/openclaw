@@ -320,7 +320,7 @@ export function resolveMemoryBackendConfig(params: {
       citations,
       openmemory: {
         url: omCfg.url,
-        userId: omCfg.userId,
+        userId: omCfg.userId?.trim() || params.agentId,
         timeout: omCfg.timeout,
       },
     };
