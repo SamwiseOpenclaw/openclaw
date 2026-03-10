@@ -8,6 +8,7 @@ import { loadConfig } from "../config/config.js";
 import { resolveStateDir } from "../config/paths.js";
 import { resolveSessionTranscriptsDirForAgent } from "../config/sessions/paths.js";
 import { setVerbose } from "../globals.js";
+import { runFullConsolidation, type ConsolidationProvider } from "../memory/consolidation.js";
 import { getMemorySearchManager, type MemorySearchManagerResult } from "../memory/index.js";
 import { listMemoryFiles, normalizeExtraMemoryPaths } from "../memory/internal.js";
 import { defaultRuntime } from "../runtime.js";
@@ -590,6 +591,10 @@ export function registerMemoryCli(program: Command) {
             "Limit results for focused troubleshooting.",
           ],
           ["openclaw memory status --json", "Output machine-readable JSON (good for scripts)."],
+          [
+            "openclaw memory consolidate --provider anthropic",
+            "Consolidate daily notes into weekly/monthly summaries.",
+          ],
         ])}\n\n${theme.muted("Docs:")} ${formatDocsLink("/cli/memory", "docs.openclaw.ai/cli/memory")}\n`,
     );
 
@@ -812,6 +817,93 @@ export function registerMemoryCli(program: Command) {
             defaultRuntime.log(lines.join("\n").trim());
           },
         });
+      },
+    );
+
+  memory
+    .command("consolidate")
+    .description("Consolidate daily memory files into weekly/monthly summaries using LLM")
+    .option("--memory-dir <path>", "Source memory directory (default: workspace/memory)")
+    .option(
+      "--output-dir <path>",
+      "Output directory for consolidated files (default: memory-dir/consolidated)",
+    )
+    .option(
+      "--provider <name>",
+      "LLM provider: anthropic, openai, gemini, minimax (default: minimax)",
+      "minimax",
+    )
+    .option(
+      "--model <name>",
+      "Model name or provider/model (e.g., claude-sonnet-4-5, anthropic/claude-sonnet-4-5)",
+    )
+    .option("--agent <id>", "Agent id for config/auth context (default: default agent)")
+    .option("--verbose", "Verbose logging", false)
+    .action(
+      async (
+        opts: MemoryCommandOptions & {
+          memoryDir?: string;
+          outputDir?: string;
+          provider?: string;
+          model?: string;
+        },
+      ) => {
+        setVerbose(Boolean(opts.verbose));
+        const { config: cfg, diagnostics } = await loadMemoryCommandConfig("memory consolidate");
+        emitMemorySecretResolveDiagnostics(diagnostics);
+
+        const agentId = resolveAgent(cfg, opts.agent);
+        const agentConfig = cfg.agents?.list?.find((a) => a.id === agentId);
+        const workspaceDir = agentConfig?.workspace ?? process.cwd();
+
+        const memoryDir = opts.memoryDir ?? path.join(workspaceDir, "memory");
+        const outputDir = opts.outputDir ?? path.join(memoryDir, "consolidated");
+
+        const provider = (opts.provider ?? "minimax") as ConsolidationProvider;
+        const validProviders: ConsolidationProvider[] = [
+          "anthropic",
+          "openai",
+          "gemini",
+          "minimax",
+          "minimax-portal",
+        ];
+        if (!validProviders.includes(provider)) {
+          defaultRuntime.error(
+            `Invalid provider "${provider}". Valid options: ${validProviders.join(", ")}`,
+          );
+          process.exitCode = 1;
+          return;
+        }
+
+        const rich = isRich();
+        defaultRuntime.log(
+          `${colorize(rich, theme.heading, "Memory Consolidation")} ${colorize(rich, theme.muted, `(${agentId})`)}`,
+        );
+        defaultRuntime.log(
+          `${colorize(rich, theme.muted, "Provider:")} ${colorize(rich, theme.info, provider)}${opts.model ? ` / ${opts.model}` : ""}`,
+        );
+        defaultRuntime.log(
+          `${colorize(rich, theme.muted, "Memory dir:")} ${colorize(rich, theme.info, shortenHomePath(memoryDir))}`,
+        );
+        defaultRuntime.log(
+          `${colorize(rich, theme.muted, "Output dir:")} ${colorize(rich, theme.info, shortenHomePath(outputDir))}`,
+        );
+        defaultRuntime.log("");
+
+        try {
+          await runFullConsolidation({
+            memoryDir,
+            outputDir,
+            llmProvider: provider,
+            model: opts.model,
+            cfg,
+          });
+          defaultRuntime.log(colorize(rich, theme.success, "✓ Consolidation complete!"));
+        } catch (err) {
+          const message = formatErrorMessage(err);
+          defaultRuntime.error(`Consolidation failed: ${message}`);
+          process.exitCode = 1;
+        }
       },
     );
 }

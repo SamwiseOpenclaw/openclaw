@@ -22,10 +22,17 @@ import { loadConfig, type OpenClawConfig } from "../config/config.js";
 
 export type ConsolidationLevel = "daily" | "weekly" | "monthly" | "longterm";
 
+export type ConsolidationProvider =
+  | "openai"
+  | "anthropic"
+  | "gemini"
+  | "minimax"
+  | "minimax-portal";
+
 export interface ConsolidationParams {
   memoryDir: string;
   outputDir: string;
-  llmProvider: "openai" | "anthropic" | "gemini" | "minimax";
+  llmProvider: ConsolidationProvider;
   model?: string;
   cfg?: OpenClawConfig;
   agentDir?: string;
@@ -52,20 +59,28 @@ type ConsolidationRuntimeDeps = {
   now?: () => number;
   invokeModel?: (params: {
     prompt: string;
-    llmProvider: ConsolidationParams["llmProvider"];
+    llmProvider: ConsolidationProvider;
     model?: string;
     cfg?: OpenClawConfig;
     agentDir?: string;
   }) => Promise<string>;
 };
 
-const DEFAULT_PROVIDER_MODEL: Record<ConsolidationParams["llmProvider"], string> = {
+const DEFAULT_PROVIDER_MODEL: Record<ConsolidationProvider, string> = {
   anthropic: "claude-sonnet-4-5",
+  openai: "gpt-4o-mini",
+  gemini: "gemini-2.0-flash",
   minimax: "MiniMax-M2.5",
+  "minimax-portal": "MiniMax-M2.5",
+};
+
+/** Map user-friendly provider names to actual provider identifiers used in auth-profiles */
+const PROVIDER_ALIAS: Record<string, string> = {
+  minimax: "minimax-portal", // minimax auth is stored under minimax-portal
 };
 
 function resolveConsolidationModelRef(params: {
-  llmProvider: ConsolidationParams["llmProvider"];
+  llmProvider: ConsolidationProvider;
   model?: string;
 }): { provider: string; modelId: string } {
   const rawModel = params.model?.trim();
@@ -76,15 +91,17 @@ function resolveConsolidationModelRef(params: {
       modelId: rawModel.slice(slash + 1),
     };
   }
+  // Map user-friendly provider names to actual auth-profile provider names
+  const resolvedProvider = PROVIDER_ALIAS[params.llmProvider] ?? params.llmProvider;
   return {
-    provider: params.llmProvider,
+    provider: resolvedProvider,
     modelId: rawModel || DEFAULT_PROVIDER_MODEL[params.llmProvider],
   };
 }
 
 async function invokeConsolidationModel(params: {
   prompt: string;
-  llmProvider: ConsolidationParams["llmProvider"];
+  llmProvider: ConsolidationProvider;
   model?: string;
   cfg?: OpenClawConfig;
   agentDir?: string;
@@ -366,7 +383,7 @@ export async function runConsolidation(
   period: string,
   _outputDir: string,
   options?: {
-    llmProvider?: ConsolidationParams["llmProvider"];
+    llmProvider?: ConsolidationProvider;
     model?: string;
     cfg?: OpenClawConfig;
     agentDir?: string;
