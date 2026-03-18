@@ -11,6 +11,21 @@ export const DEFAULT_MEMORY_FLUSH_SOFT_TOKENS = 4000;
 export const DEFAULT_MEMORY_FLUSH_FORCE_TRANSCRIPT_BYTES = 2 * 1024 * 1024;
 
 /**
+ * Safety hints for file-based memory backends (from upstream)
+ */
+const MEMORY_FLUSH_TARGET_HINT =
+  "Store durable memories only in memory/YYYY-MM-DD.md (create memory/ if needed).";
+const MEMORY_FLUSH_APPEND_ONLY_HINT =
+  "If memory/YYYY-MM-DD.md already exists, APPEND new content only and do not overwrite existing entries.";
+const MEMORY_FLUSH_READ_ONLY_HINT =
+  "Treat workspace bootstrap/reference files such as MEMORY.md, SOUL.md, TOOLS.md, and AGENTS.md as read-only during this flush; never overwrite, replace, or edit them.";
+const MEMORY_FLUSH_REQUIRED_HINTS = [
+  MEMORY_FLUSH_TARGET_HINT,
+  MEMORY_FLUSH_APPEND_ONLY_HINT,
+  MEMORY_FLUSH_READ_ONLY_HINT,
+];
+
+/**
  * Prompt for agents using OpenMemory backend
  */
 export const OPENMEMORY_MEMORY_FLUSH_PROMPT = [
@@ -22,12 +37,23 @@ export const OPENMEMORY_MEMORY_FLUSH_PROMPT = [
 ].join(" ");
 
 /**
+ * System prompt for OpenMemory backend
+ */
+export const OPENMEMORY_MEMORY_FLUSH_SYSTEM_PROMPT = [
+  "Pre-compaction memory flush turn.",
+  "The session is near auto-compaction; capture durable memories to OpenMemory via memory_add tool.",
+  "Use the memory_add tool to store important facts, decisions, and preferences.",
+  `You may reply, but usually ${SILENT_REPLY_TOKEN} is correct.`,
+].join(" ");
+
+/**
  * Prompt for agents using builtin/file-based backend
  */
 export const DEFAULT_MEMORY_FLUSH_PROMPT = [
   "Pre-compaction memory flush.",
-  "Store durable memories now (use memory/YYYY-MM-DD.md; create memory/ if needed).",
-  "IMPORTANT: If the file already exists, APPEND new content only — do not overwrite existing entries.",
+  MEMORY_FLUSH_TARGET_HINT,
+  MEMORY_FLUSH_READ_ONLY_HINT,
+  MEMORY_FLUSH_APPEND_ONLY_HINT,
   "Do NOT create timestamped variant files (e.g., YYYY-MM-DD-HHMM.md); always use the canonical YYYY-MM-DD.md filename.",
   `If nothing to store, reply with ${SILENT_REPLY_TOKEN}.`,
 ].join(" ");
@@ -35,6 +61,9 @@ export const DEFAULT_MEMORY_FLUSH_PROMPT = [
 export const DEFAULT_MEMORY_FLUSH_SYSTEM_PROMPT = [
   "Pre-compaction memory flush turn.",
   "The session is near auto-compaction; capture durable memories to disk.",
+  MEMORY_FLUSH_TARGET_HINT,
+  MEMORY_FLUSH_READ_ONLY_HINT,
+  MEMORY_FLUSH_APPEND_ONLY_HINT,
   `You may reply, but usually ${SILENT_REPLY_TOKEN} is correct.`,
 ].join(" ");
 
@@ -54,14 +83,29 @@ function formatDateStampInTimezone(nowMs: number, timezone: string): string {
   return new Date(nowMs).toISOString().slice(0, 10);
 }
 
+export function resolveMemoryFlushRelativePathForRun(params: {
+  cfg?: OpenClawConfig;
+  nowMs?: number;
+}): string {
+  const nowMs = Number.isFinite(params.nowMs) ? (params.nowMs as number) : Date.now();
+  const { userTimezone } = resolveCronStyleNow(params.cfg ?? {}, nowMs);
+  const dateStamp = formatDateStampInTimezone(nowMs, userTimezone);
+  return `memory/${dateStamp}.md`;
+}
+
 export function resolveMemoryFlushPromptForRun(params: {
   prompt: string;
   cfg?: OpenClawConfig;
   nowMs?: number;
 }): string {
   const nowMs = Number.isFinite(params.nowMs) ? (params.nowMs as number) : Date.now();
-  const { userTimezone, timeLine } = resolveCronStyleNow(params.cfg ?? {}, nowMs);
-  const dateStamp = formatDateStampInTimezone(nowMs, userTimezone);
+  const { timeLine } = resolveCronStyleNow(params.cfg ?? {}, nowMs);
+  const dateStamp = resolveMemoryFlushRelativePathForRun({
+    cfg: params.cfg,
+    nowMs,
+  })
+    .replace(/^memory\//, "")
+    .replace(/\.md$/, "");
   const withDate = params.prompt.replaceAll("YYYY-MM-DD", dateStamp).trimEnd();
   if (!withDate) {
     return timeLine;
@@ -71,16 +115,6 @@ export function resolveMemoryFlushPromptForRun(params: {
   }
   return `${withDate}\n${timeLine}`;
 }
-
-/**
- * System prompt for OpenMemory backend
- */
-export const OPENMEMORY_MEMORY_FLUSH_SYSTEM_PROMPT = [
-  "Pre-compaction memory flush turn.",
-  "The session is near auto-compaction; capture durable memories to OpenMemory via memory_add tool.",
-  "Use the memory_add tool to store important facts, decisions, and preferences.",
-  `You may reply, but usually ${SILENT_REPLY_TOKEN} is correct.`,
-].join(" ");
 
 export type MemoryFlushSettings = {
   enabled: boolean;
@@ -122,15 +156,24 @@ export function resolveMemoryFlushSettings(cfg?: OpenClawConfig): MemoryFlushSet
     parseNonNegativeByteSize(defaults?.forceFlushTranscriptBytes) ??
     DEFAULT_MEMORY_FLUSH_FORCE_TRANSCRIPT_BYTES;
 
-  // Use OpenMemory prompts if backend is openmemory
+  // Use OpenMemory prompts if backend is openmemory (no file safety hints needed)
+  // Use file-based prompts with safety hints otherwise
   const isOpenMemory = isOpenMemoryBackend(cfg);
   const defaultPrompt = isOpenMemory ? OPENMEMORY_MEMORY_FLUSH_PROMPT : DEFAULT_MEMORY_FLUSH_PROMPT;
   const defaultSystemPrompt = isOpenMemory
     ? OPENMEMORY_MEMORY_FLUSH_SYSTEM_PROMPT
     : DEFAULT_MEMORY_FLUSH_SYSTEM_PROMPT;
 
-  const prompt = defaults?.prompt?.trim() || defaultPrompt;
-  const systemPrompt = defaults?.systemPrompt?.trim() || defaultSystemPrompt;
+  // Get custom prompts or use defaults
+  const rawPrompt = defaults?.prompt?.trim() || defaultPrompt;
+  const rawSystemPrompt = defaults?.systemPrompt?.trim() || defaultSystemPrompt;
+
+  // Apply safety hints only for file-based backends (not OpenMemory)
+  const prompt = isOpenMemory ? rawPrompt : ensureMemoryFlushSafetyHints(rawPrompt);
+  const systemPrompt = isOpenMemory
+    ? rawSystemPrompt
+    : ensureMemoryFlushSafetyHints(rawSystemPrompt);
+
   const reserveTokensFloor =
     normalizeNonNegativeInt(cfg?.agents?.defaults?.compaction?.reserveTokensFloor) ??
     DEFAULT_PI_COMPACTION_RESERVE_TOKENS_FLOOR;
@@ -150,6 +193,16 @@ function ensureNoReplyHint(text: string): string {
     return text;
   }
   return `${text}\n\nIf no user-visible reply is needed, start with ${SILENT_REPLY_TOKEN}.`;
+}
+
+function ensureMemoryFlushSafetyHints(text: string): string {
+  let next = text.trim();
+  for (const hint of MEMORY_FLUSH_REQUIRED_HINTS) {
+    if (!next.includes(hint)) {
+      next = next ? `${next}\n\n${hint}` : hint;
+    }
+  }
+  return next;
 }
 
 export function resolveMemoryFlushContextWindowTokens(params: {
