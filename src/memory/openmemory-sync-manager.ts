@@ -130,10 +130,18 @@ export class OpenMemorySyncManager extends OpenMemoryClient {
 
   async syncAllSessions(): Promise<void> {
     const files = await listSessionFilesForAgent(this.agentId);
-    for (const absPath of files) {
-      this.pendingSync.add(absPath);
+    if (!files?.length) {
+      return;
     }
-    await this.syncPending({ reason: "full-sync" });
+    // Process each session file directly to ensure it gets synced
+    // Bypass pendingSync queue which may have race conditions
+    for (const absPath of files) {
+      try {
+        await this.syncSessionFile(absPath, "full-sync");
+      } catch (err) {
+        this.log?.error?.(`Failed to sync session ${absPath}:`, err);
+      }
+    }
   }
 
   async syncPending(params?: { reason?: string }): Promise<void> {
