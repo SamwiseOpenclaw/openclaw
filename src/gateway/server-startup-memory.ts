@@ -47,6 +47,8 @@ export async function startGatewayMemoryBackend(params: {
 
         if (manager) {
           manager.startListening();
+          // Immediately sync all existing sessions on startup to ensure no sessions are missed
+          await manager.syncAllSessions();
           openMemorySyncManagers.set(agentId, manager);
           params.log.info?.(`OpenMemory session sync started for agent "${agentId}"`);
         }
